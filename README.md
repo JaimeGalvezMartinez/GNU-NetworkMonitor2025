@@ -69,10 +69,13 @@ sudo python3 GNU-NetworkMonitor.py
 
 ## License
 
-This project is licensed under the GNU License. See the LICENSE file for details.
-Contributions
+This project is licensed under the GNU License. See the ```LICENSE``` file for details.
+
+COPYRIGHT &COPY; 2025 Jaime Galvez Martinez; This project is released under the GNU General Public License
+
+## Contributions
 
 Contributions, issues, and feature requests are welcome! Feel free to submit a pull request or create an issue to improve the tool.
 
-
 Let me know if you'd like to add or modify anything further!
+
