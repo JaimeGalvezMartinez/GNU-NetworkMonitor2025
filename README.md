@@ -20,6 +20,14 @@ GNU-NetworkMonitor is a Python-based graphical tool designed to monitor networks
 ```bash
 pip install scapy requests netifaces
 ```
+## Alternative to install in linux:
+
+```
+pip install scapy --break-system-packages
+pip install requests --break-system-packages
+pip install netifaces --break-system-packages
+```
+
 How to Run
 
   Clone this repository:
@@ -27,11 +35,11 @@ How to Run
 git clone https://github.com/TheHellishPandaa/GNU-NetworkMonitor.git
 cd GNU-NetworkMonitor
  ``` 
-Run the program:
+## Run the program:
 
     python GNU-NetworkMonitor.py
 ´´´
-On Linux:
+## On Linux:
 ```
 sudo python GNU-NetworkMonitor.py
 ```
