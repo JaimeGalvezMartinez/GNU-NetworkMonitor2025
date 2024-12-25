@@ -28,9 +28,7 @@ pip install requests --break-system-packages
 pip install netifaces --break-system-packages
 ```
 
-How to Run
-
-  Clone this repository:
+## Clone this repository:
 ```
 git clone https://github.com/TheHellishPandaa/GNU-NetworkMonitor.git
 cd GNU-NetworkMonitor
@@ -45,9 +43,8 @@ sudo python GNU-NetworkMonitor.py
 ```
   Follow the graphical interface to scan your network, analyze hosts, and perform port scans.
 
-Screenshots
+## Screenshots
 
-(Add screenshots of the tool here.)
 ## Usage
 
   - Scan Network: Click on the "Scan Network" button to discover devices in your network. Be patient, as scanning might take a few minutes.
