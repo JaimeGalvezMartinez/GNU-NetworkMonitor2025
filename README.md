@@ -45,6 +45,17 @@ sudo python GNU-NetworkMonitor.py
 
 ## Screenshots
 
+![imagen](https://github.com/user-attachments/assets/826e5f0d-8fe9-48b2-907c-1869dd12b50d)
+<br>
+![imagen](https://github.com/user-attachments/assets/60980445-1c6e-460f-aac1-5bbd610ec447)
+<br>
+![imagen](https://github.com/user-attachments/assets/00ac1b81-d850-4c5d-8326-beb7f9bf320c)
+<br>
+![imagen](https://github.com/user-attachments/assets/b4cf805e-bef1-41e8-96b4-6d53d30cc7e5)
+<br>
+![imagen](https://github.com/user-attachments/assets/e18eefce-4926-4e0d-8842-a158fec9aaf3)
+
+
 ## Usage
 
   - Scan Network: Click on the "Scan Network" button to discover devices in your network. Be patient, as scanning might take a few minutes.
