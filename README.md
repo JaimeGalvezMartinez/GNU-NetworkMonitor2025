@@ -39,7 +39,7 @@ cd GNU-NetworkMonitor
 ´´´
 ## On Linux:
 ```
-sudo python GNU-NetworkMonitor.py
+sudo python3 GNU-NetworkMonitor.py
 ```
   Follow the graphical interface to scan your network, analyze hosts, and perform port scans.
 
