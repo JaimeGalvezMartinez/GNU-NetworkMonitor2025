@@ -1,5 +1,5 @@
 import tkinter as tk
-from tkinter import ttk, messagebox, filedialog 
+from tkinter import ttk, messagebox, filedialog
 import socket
 from scapy.all import ARP, Ether, srp 
 import threading
@@ -98,13 +98,31 @@ class NetworkMonitorApp:
         self.dark_mode = False
         self.mac_cache = {}
         self.host_status = {}
-        self.local_ip, self.netmask = self._get_local_ip_and_subnet()
-        self.wifi_networks = {} 
+        
+        # 1. Obtener todas las interfaces disponibles
+        self.all_interfaces = self._get_local_ip_and_subnet()
+        self.current_interface = None # La interfaz seleccionada actualmente
+        self.local_ip = None
+        self.netmask = None
+        
+        # 2. Seleccionar la primera interfaz y establecer self.local_ip/self.netmask
+        if self.all_interfaces:
+            # Selecciona la primera interfaz por defecto (ej. eth0, wlan0)
+            self.current_interface = list(self.all_interfaces.keys())[0]
+            self._set_initial_network_vars() # NUEVA FUNCIÓN para establecer variables sin GUI
+            
+        self.wifi_networks = {}  
         self.monitor_interface = None 
         
-        # UI Setup
+        # 3. UI Setup
         self._setup_style()
+        
+        # CAMBIO CRÍTICO: LLAMAR PRIMERO A _create_widgets()
         self._create_widgets()
+        
+        # 4. AHORA podemos actualizar el Label, ya que fue creado
+        if self.all_interfaces:
+             self._update_network_info()
         
         # Apply initial settings
         self.toggle_theme(initial=True) 
@@ -114,19 +132,70 @@ class NetworkMonitorApp:
     # ----------------------- Setup & Helpers -----------------------
 
     def _get_local_ip_and_subnet(self):
-        """Recupera la IP local y la máscara de subred."""
+        """
+        Recupera IP local, máscara de subred y MAC para TODAS las interfaces activas.
+        Devuelve: { 'iface_name': {'ip': 'x.x.x.x', 'netmask': 'y.y.y.y', 'mac': 'aa:bb:cc...'} }
+        """
+        interfaces_details = {}
         try:
             for iface in netifaces.interfaces():
                 addrs = netifaces.ifaddresses(iface)
+                
+                # Buscamos la dirección IPv4
                 if netifaces.AF_INET in addrs:
-                    ip = addrs[netifaces.AF_INET][0]['addr']
-                    netmask = addrs[netifaces.AF_INET][0]['netmask']
-                    if ip != "127.0.0.1":
-                        return ip, netmask
-            return None, None
-        except Exception:
-            return None, None
+                    ip_info = addrs[netifaces.AF_INET][0]
+                    ip = ip_info.get('addr')
+                    netmask = ip_info.get('netmask')
+                    
+                    # Ignoramos la interfaz loopback y las que no tienen IP válida
+                    if ip and ip != "127.0.0.1" and netmask:
+                        mac = addrs.get(netifaces.AF_LINK, [{}])[0].get('addr', 'N/A')
+                        interfaces_details[iface] = {
+                            'ip': ip,
+                            'netmask': netmask,
+                            'mac': mac
+                        }
+            return interfaces_details
+        except Exception as e:
+            print(f"Error al obtener interfaces: {e}")
+            return {}
+            
+    def _set_initial_network_vars(self):
+        """Establece self.local_ip y self.netmask al inicio si hay interfaces."""
+        if self.current_interface and self.current_interface in self.all_interfaces:
+            info = self.all_interfaces[self.current_interface]
+            self.local_ip = info['ip']
+            self.netmask = info['netmask']
+        else:
+            self.local_ip = None
+            self.netmask = None
+            
+    def _update_network_info(self, event=None):
+        """Actualiza la IP y Máscara de la clase según la interfaz seleccionada y actualiza el Label."""
+        tr = LANG_DICT[self.current_lang]
+        if self.current_interface and self.current_interface in self.all_interfaces:
+            info = self.all_interfaces[self.current_interface]
+            self.local_ip = info['ip']
+            self.netmask = info['netmask']
+            
+            # Actualiza el Label de información
+            ip_info_text = f"Interfaz: {self.current_interface}\nIP Local: {self.local_ip}\nMáscara de Subred: {self.netmask}"
+            # Se usa self.local_ip_label.config porque el Label ya existe
+            self.local_ip_label.config(text=ip_info_text) 
+            
+            # Borrar resultados previos al cambiar de interfaz
+            self.tree.delete(*self.tree.get_children())
+        else:
+            self.local_ip = None
+            self.netmask = None
+            self.local_ip_label.config(text=tr["error_ip"])
 
+
+    def _on_interface_selected(self, event):
+        """Maneja el evento de cambio en el selector de interfaz."""
+        self.current_interface = self.interface_combo.get()
+        self._update_network_info()
+        
     def _setup_style(self):
         """Inicializa el estilo ttk."""
         self.style = ttk.Style()
@@ -135,11 +204,33 @@ class NetworkMonitorApp:
     def _create_widgets(self):
         """Crea y empaqueta todos los elementos de la GUI."""
         self.master.geometry("1300x980")
+        
+        # --- Selector de Interfaz (NUEVO) ---
+        interfaces = list(self.all_interfaces.keys())
+        tr = LANG_DICT[self.current_lang]
+        
+        if interfaces:
+            # Seleccionador de Interfaz
+            tk.Label(self.master, text="Seleccionar Interfaz:", font=("Arial", 10)).pack(pady=5)
+            self.interface_combo = ttk.Combobox(self.master, values=interfaces, state="readonly")
+            self.interface_combo.set(self.current_interface if self.current_interface else interfaces[0])
+            self.interface_combo.pack()
+            
+            # Vinculamos la selección para actualizar la IP mostrada
+            self.interface_combo.bind("<<ComboboxSelected>>", self._on_interface_selected)
+            self.current_interface = self.interface_combo.get()
+        else:
+            tk.Label(self.master, text=tr["error_ip"], font=("Arial", 12, "bold"), fg="red").pack(pady=10)
 
-        # --- Información de IP Local ---
+        # --- Información de IP Local (CREACIÓN DEL LABEL) ---
+        # El texto inicial usa las variables self.local_ip/self.netmask que se inicializaron
         ip_info_text = f"IP Local: {self.local_ip}\nMáscara de Subred: {self.netmask}"
+        
+        # ¡IMPORTANTE! Creamos el Label aquí, antes de que _update_network_info intente usarlo.
         self.local_ip_label = tk.Label(self.master, text=ip_info_text, font=("Arial", 12))
         self.local_ip_label.pack(pady=10)
+        
+        # NO LLAMAR A _update_network_info() AQUÍ. Ahora se hace al final de __init__.
 
         # --- Selector de Idioma ---
         tk.Label(self.master, text=LANG_DICT[self.current_lang]["language"], font=("Arial", 10)).pack(pady=5)
@@ -222,6 +313,9 @@ class NetworkMonitorApp:
         for i, col in enumerate(columns):
             self.tree.heading(col, text=tr[headings[i]])
             
+        # Asegura que la etiqueta de IP local se actualice con el idioma
+        self._update_network_info() 
+            
     def toggle_theme(self, initial=False):
         """Alterna entre el tema oscuro y el claro."""
         if not initial:
@@ -235,7 +329,7 @@ class NetworkMonitorApp:
             self.style.theme_use("clam")
             
             self.style.configure("Treeview", background=tree_bg, fieldbackground=tree_bg,
-                                foreground=tree_fg, bordercolor=accent, rowheight=25)
+                                 foreground=tree_fg, bordercolor=accent, rowheight=25)
             self.style.map("Treeview", background=[("selected", accent)])
             self.style.configure("Treeview.Heading", background="#1E1E1E", foreground="#FFFFFF")
         else:
@@ -246,22 +340,24 @@ class NetworkMonitorApp:
             self.style.theme_use("default")
             
             self.style.configure("Treeview", background=tree_bg, fieldbackground=tree_bg,
-                                foreground=tree_fg, rowheight=25)
+                                 foreground=tree_fg, rowheight=25)
             self.style.map("Treeview", background=[("selected", accent)])
             self.style.configure("Treeview.Heading", background="#D3D3D3", foreground="#000000")
 
         self.master.configure(bg=bg_color)
-        for widget in [self.local_ip_label, self.progress_label, self.ports_label] + self.master.winfo_children()[2:4]:
+        for widget in self.master.winfo_children():
+            if isinstance(widget, tk.Frame):
+                widget.config(bg=bg_color)
             if isinstance(widget, (tk.Label, ttk.Label)):
                 widget.config(bg=bg_color, fg=fg_color)
+            if isinstance(widget, (tk.Button)):
+                widget.config(bg=button_bg, fg=button_fg, activebackground=accent, activeforeground="#FFFFFF",
+                              relief="flat", bd=2, highlightbackground=accent)
                 
         self.ports_text.config(bg=entry_bg, fg=fg_color, insertbackground=fg_color,
-                               relief="flat", bd=2, highlightbackground=accent)
-        
-        for button in [self.scan_button, self.check_ip_button, self.port_button, self.exit_button, self.theme_button, self.advanced_button]:
-            button.config(bg=button_bg, fg=button_fg, activebackground=accent, activeforeground="#FFFFFF",
-                          relief="flat", bd=2, highlightbackground=accent)
-        self.exit_button.config(bg="red", fg="white") 
+                                 relief="flat", bd=2, highlightbackground=accent)
+                                 
+        self.exit_button.config(bg="red", fg="white")
 
     # ----------------------- Network Helper Methods -----------------------
 
@@ -286,7 +382,7 @@ class NetworkMonitorApp:
         if oui in self.mac_cache:
             return self.mac_cache[oui]
         try:
-            # Usamos la MAC completa limpia (sin los :) para la API
+            # Usamos la MAC limpia (sin los :) para la API
             mac_for_api = ':'.join(oui[i:i+2] for i in range(0, len(oui), 2)) + ':00:00:00' 
 
             response = requests.get(f"https://api.macvendors.com/{mac_for_api}", timeout=2)
@@ -306,6 +402,11 @@ class NetworkMonitorApp:
 
     def _get_own_mac(self, ip):
         """Encuentra la dirección MAC de la máquina local para una IP dada."""
+        # Ahora usamos self.all_interfaces para buscar la MAC
+        if self.current_interface in self.all_interfaces:
+            return self.all_interfaces[self.current_interface].get('mac', 'Unknown')
+        
+        # Fallback (aunque no debería ser necesario si self.all_interfaces está configurado)
         for iface in netifaces.interfaces():
             addrs = netifaces.ifaddresses(iface)
             if netifaces.AF_INET in addrs and netifaces.AF_LINK in addrs:
@@ -340,11 +441,12 @@ class NetworkMonitorApp:
     
     def _start_network_scan(self):
         """Prepara e inicia el escaneo de red en un hilo separado."""
+        tr = LANG_DICT[self.current_lang]
         if not self.local_ip or not self.netmask:
-            messagebox.showerror("Error", LANG_DICT[self.current_lang]["error_ip"])
+            messagebox.showerror("Error", tr["error_ip"])
             return
 
-        messagebox.showinfo(LANG_DICT[self.current_lang]["notice_scan"], LANG_DICT[self.current_lang]["notice_scan"])
+        messagebox.showinfo(tr["notice_scan"], tr["notice_scan"])
         self.scan_button.config(state=tk.DISABLED)
         self.tree.delete(*self.tree.get_children())
         self._update_progress_bar(0)
@@ -354,6 +456,7 @@ class NetworkMonitorApp:
     def _run_network_scan(self):
         """Realiza el escaneo ARP y recopila los detalles del host. (Requiere Sudo)"""
         try:
+            # USA LA IP/NETMASK DE LA INTERFAZ SELECCIONADA
             network = ipaddress.IPv4Network(f"{self.local_ip}/{self.netmask}", strict=False)
             arp_req = ARP(pdst=str(network))
             broadcast = Ether(dst="ff:ff:ff:ff:ff:ff")
@@ -417,9 +520,10 @@ class NetworkMonitorApp:
     
     def scan_ports(self):
         """Inicia el escaneo de puertos multi-hilo."""
+        tr = LANG_DICT[self.current_lang]
         selected_item = self.tree.focus()
         if not selected_item:
-            messagebox.showwarning(LANG_DICT[self.current_lang]["select_host_warning"], LANG_DICT[self.current_lang]["select_host_warning"])
+            messagebox.showwarning(tr["select_host_warning"], tr["select_host_warning"])
             return
             
         host_ip = self.tree.item(selected_item, "values")[0]
@@ -472,7 +576,7 @@ class NetworkMonitorApp:
             # Comprobación de existencia del comando (solo para nmcli)
             if command.startswith("nmcli") and not subprocess.run("which nmcli", shell=True, capture_output=True).returncode == 0:
                  return "nmcli no se encontró. Asegúrate de que NetworkManager esté instalado.", 127
-                 
+                    
             # Ejecución del comando
             result = subprocess.run(command, capture_output=True, text=True, check=check_error, shell=True, encoding="utf-8")
             
@@ -548,23 +652,23 @@ class NetworkMonitorApp:
         
         interfaces = self._get_all_interfaces()
         
-        self.interface_combo = ttk.Combobox(interface_frame, values=interfaces, state="readonly", width=12)
-        if "wlp7s0" in interfaces:
-            self.interface_combo.set("wlp7s0")
+        self.interface_combo_adv = ttk.Combobox(interface_frame, values=interfaces, state="readonly", width=12)
+        if self.current_interface in interfaces:
+            self.interface_combo_adv.set(self.current_interface)
         elif interfaces:
-            self.interface_combo.set(interfaces[0])
+            self.interface_combo_adv.set(interfaces[0])
         else:
-             self.interface_combo.set("")
-             
-        self.interface_combo.pack(side=tk.LEFT, padx=5)
+            self.interface_combo_adv.set("")
+            
+        self.interface_combo_adv.pack(side=tk.LEFT, padx=5)
         
         scan_button = tk.Button(interface_frame, text=tr["start_wifi_scan"], 
-                                command=lambda: self._start_wifi_scan_thread(self.interface_combo.get(), advanced_window))
+                                 command=lambda: self._start_wifi_scan_thread(self.interface_combo_adv.get(), advanced_window))
         scan_button.pack(side=tk.LEFT, padx=15)
         
         # --- Botón de Exportar a CSV ---
         export_button = tk.Button(interface_frame, text=tr["export_csv"], 
-                                command=self._export_wifi_to_csv)
+                                 command=self._export_wifi_to_csv)
         export_button.pack(side=tk.LEFT, padx=15)
         
         # --- Treeview para Redes WiFi ---
@@ -688,64 +792,72 @@ class NetworkMonitorApp:
 
 
     def _update_wifi_treeview(self, details):
-        """Inserta la red Wi-Fi en el Treeview, pintándola de verde si tiene un SSID."""
+        """Inserta o actualiza un host Wi-Fi en el Treeview con etiquetas de color."""
         
-        tag = "available" if details["SSID"] not in ["<Hidden/Unknown>", "<Hidden SSID>"] else "unknown"
+        # El Manufacturer es el criterio para asignar la etiqueta visual
+        tag = "available" if details["Manufacturer"] not in ("Unknown", "Error", "Broadcast/Unknown") else "unknown"
         
-        self.wifi_tree.insert("", "end", 
-                              values=(details["SSID"], details["BSSID"], details["Channel"], 
-                                      details["Signal"], details["Encryption"], details["Manufacturer"]), 
-                              tags=(tag,))
+        values = (
+            details["SSID"], 
+            details["BSSID"], 
+            details["Channel"], 
+            details["Signal"], 
+            details["Encryption"], 
+            details["Manufacturer"]
+        )
+        
+        # Eliminar cualquier entrada duplicada antes de insertar (usa BSSID como clave única)
+        for item in self.wifi_tree.get_children():
+            if self.wifi_tree.item(item, "values")[1] == details["BSSID"]:
+                self.wifi_tree.delete(item)
+                break
+                
+        self.wifi_tree.insert("", "end", values=values, tags=(tag,))
+
 
     def _export_wifi_to_csv(self):
-        """Exporta los datos del escaneo Wi-Fi a un archivo CSV."""
+        """Exporta los datos de Wi-Fi escaneados a un archivo CSV."""
+        
         tr = LANG_DICT[self.current_lang]
         
         if not self.wifi_networks:
-            messagebox.showwarning(tr["export_csv"], "No hay datos de redes Wi-Fi para exportar.")
+            messagebox.showwarning(tr["advanced_mode"], "No hay datos de Wi-Fi para exportar. Por favor, realiza un escaneo primero.")
             return
 
-        from tkinter import filedialog
-        
-        default_filename = f"wifi_scan_report_{time.strftime('%Y%m%d_%H%M%S')}.csv"
-        
-        filepath = filedialog.asksaveasfilename(
+        # Abrir el diálogo para guardar archivo
+        filename = filedialog.asksaveasfilename(
             defaultextension=".csv",
-            initialfile=default_filename,
-            filetypes=[("Archivos CSV", "*.csv"), ("Todos los archivos", "*.*")],
-            title="Guardar informe de escaneo Wi-Fi"
+            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
+            title="Guardar datos de Wi-Fi como CSV"
         )
-
-        if not filepath:
+        
+        if not filename:
             return
 
+        # Escribir en el archivo CSV
         try:
-            with open(filepath, 'w', newline='', encoding='utf-8') as csvfile:
+            with open(filename, 'w', newline='', encoding='utf-8') as csvfile:
                 fieldnames = ["SSID", "BSSID", "Channel", "Signal", "Encryption", "Manufacturer"]
-                # Usamos ';' como delimitador ya que es más común en CSVs españoles
-                writer = csv.DictWriter(csvfile, fieldnames=fieldnames, delimiter=';') 
+                writer = csv.DictWriter(csvfile, fieldnames=fieldnames, delimiter=';')
                 
-                writer.writeheader()
+                # Escribir encabezados
+                writer.writeheader() 
                 
-                for mac in self.wifi_networks:
-                    writer.writerow(self.wifi_networks[mac])
-            
-            messagebox.showinfo(tr["export_csv"], tr["csv_success"].format(filepath))
+                # Escribir filas de datos
+                for net in self.wifi_networks.values():
+                    writer.writerow(net)
+
+            messagebox.showinfo(tr["advanced_mode"], tr["csv_success"].format(filename))
             
         except Exception as e:
-            messagebox.showerror(tr["export_csv"], f"Error al guardar el archivo CSV: {e}")
+            messagebox.showerror(tr["advanced_mode"], f"Error al exportar a CSV: {e}")
 
-
-# ----------------------- Main Execution ---------------------------------
+# ----------------------- Main Tkinter Loop -----------------------
 
 if __name__ == "__main__":
-    
-    if os.geteuid() != 0:
-         # Advertencia si no se ejecuta como root (importante para ARP y escaneo Wi-Fi)
-         print("\n=======================================================")
-         print("ADVERTENCIA: Se recomienda ejecutar este script con 'sudo' para asegurar el funcionamiento completo (Escaneo de Red/WiFi).")
-         print("=======================================================\n")
-         
-    window = tk.Tk()
-    app = NetworkMonitorApp(window)
-    window.mainloop()
+    root = tk.Tk()
+    # Pre-configuración del tema para evitar un inicio en blanco
+    style = ttk.Style()
+    style.theme_use("clam")
+    app = NetworkMonitorApp(root)
+    root.mainloop()
