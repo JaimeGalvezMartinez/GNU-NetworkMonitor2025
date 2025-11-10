@@ -1,8 +1,6 @@
-
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk, messagebox, filedialog 
 import socket
-# scapy se usa solo para el escaneo ARP, ya no para Wi-Fi, por lo que las importaciones son mínimas.
 from scapy.all import ARP, Ether, srp 
 import threading
 import ipaddress
@@ -13,6 +11,8 @@ import time
 import subprocess
 import platform
 import re 
+import csv 
+import os 
 
 # ----------------------- Configuration & Translations -----------------------
 
@@ -44,11 +44,13 @@ LANG_DICT = {
         "wifi_channel": "Channel",
         "wifi_mac": "BSSID/MAC",
         "wifi_encryption": "Encryption",
-        "wifi_signal": "Signal (dBm)", 
+        "wifi_signal": "Signal", 
         "wifi_ssid": "Network Name (SSID)",
         "error_interface": "Could not retrieve network interfaces.",
         "error_wifi_scan": "Error scanning. Ensure NetworkManager is active and the system is Linux.",
-        "linux_only": "This feature is only compatible with Linux (nmcli)."
+        "linux_only": "This feature is only compatible with Linux (nmcli).",
+        "export_csv": "Export to CSV", 
+        "csv_success": "Wi-Fi data successfully exported to: {}"
     },
     "es": {
         "title": "GNU-NetworkMonitor",
@@ -77,11 +79,13 @@ LANG_DICT = {
         "wifi_channel": "Canal",
         "wifi_mac": "BSSID/MAC",
         "wifi_encryption": "Cifrado",
-        "wifi_signal": "Señal (dBm)",
+        "wifi_signal": "Señal", 
         "wifi_ssid": "Nombre de Red (SSID)",
         "error_interface": "No se pudieron obtener las interfaces de red.",
         "error_wifi_scan": "Error al escanear. Asegúrate de que NetworkManager esté activo y el sistema sea Linux.",
-        "linux_only": "Esta función solo es compatible con Linux (nmcli)."
+        "linux_only": "Esta función solo es compatible con Linux (nmcli).",
+        "export_csv": "Exportar a CSV", 
+        "csv_success": "Datos Wi-Fi exportados correctamente a: {}" 
     }
 }
 
@@ -272,15 +276,21 @@ class NetworkMonitorApp:
 
     def _get_device_manufacturer(self, mac):
         """Recupera el fabricante a partir de la dirección MAC (OUI)."""
-        oui = mac.upper()[0:8]
-        if len(oui) < 8 or mac == "ff:ff:ff:ff:ff:ff":
+        # Limpieza de la MAC para asegurar que solo sea 12 caracteres hex
+        mac_clean = re.sub(r'[^0-9A-Fa-f]', '', mac)
+        
+        oui = mac_clean.upper()[0:6] 
+        if len(oui) < 6:
             return "Broadcast/Unknown"
             
         if oui in self.mac_cache:
             return self.mac_cache[oui]
         try:
-            response = requests.get(f"https://api.macvendors.com/{mac}", timeout=2)
-            manufacturer = response.text.strip() if response.status_code == 200 else "Unknown"
+            # Usamos la MAC completa limpia (sin los :) para la API
+            mac_for_api = ':'.join(oui[i:i+2] for i in range(0, len(oui), 2)) + ':00:00:00' 
+
+            response = requests.get(f"https://api.macvendors.com/{mac_for_api}", timeout=2)
+            manufacturer = response.text.strip() if response.status_code == 200 and response.text.strip() not in ('Not Found', 'null', 'mac address not found') else "Unknown"
             self.mac_cache[oui] = manufacturer
             return manufacturer
         except:
@@ -451,31 +461,71 @@ class NetworkMonitorApp:
         self.master.after(0, lambda: self.ports_label.config(text=LANG_DICT[self.current_lang]["estimated_time"].format(0)))
 
 
-    # ----------------------- Advanced Mode (NUEVA LÓGICA SIN MODO MONITOR) -----------------------
+    # ----------------------- Advanced Mode (WIFI SCAN LOGIC) -----------------------
 
     def _run_system_command(self, command, check_error=True):
-        """Ejecuta un comando del sistema y maneja la salida."""
+        """
+        Ejecuta un comando del sistema.
+        Aplica limpieza estricta y comprueba la existencia del comando.
+        """
         try:
-            result = subprocess.run(command, capture_output=True, text=True, check=check_error, shell=True)
-            return result.stdout.strip(), result.returncode
+            # Comprobación de existencia del comando (solo para nmcli)
+            if command.startswith("nmcli") and not subprocess.run("which nmcli", shell=True, capture_output=True).returncode == 0:
+                 return "nmcli no se encontró. Asegúrate de que NetworkManager esté instalado.", 127
+                 
+            # Ejecución del comando
+            result = subprocess.run(command, capture_output=True, text=True, check=check_error, shell=True, encoding="utf-8")
+            
+            # Limpiamos retornos de carro ('\r') y nulos ('\x00')
+            output = result.stdout.strip().replace('\r', '').replace('\x00', '')
+            
+            return output, result.returncode
         except subprocess.CalledProcessError as e:
-            return e.stderr.strip(), e.returncode
+            output = e.stderr.strip().replace('\r', '').replace('\x00', '')
+            return output, e.returncode
         except FileNotFoundError:
-            return "Comando no encontrado.", 1
+            return "Comando no encontrado.", 127
     
     def _get_all_interfaces(self):
         """Obtiene todas las interfaces de red del sistema, filtrando solo Wi-Fi si es Linux."""
         try:
             if platform.system() == "Linux":
                 output, code = self._run_system_command("nmcli device status | grep wifi", check_error=False)
-                if code == 0:
+                if code == 0 and output.strip():
                     return [line.split()[0] for line in output.splitlines() if 'wifi' in line.split()]
+                
+                # Fallback: usar iw dev para buscar interfaces Wi-Fi si nmcli falla o no está disponible
+                if not output.strip() or code != 0:
+                     iw_output, iw_code = self._run_system_command("iw dev", check_error=False)
+                     if iw_code == 0 and "Interface" in iw_output:
+                         return [line.split()[1] for line in iw_output.splitlines() if line.strip().startswith("Interface")]
+
             
             interfaces = [i for i in netifaces.interfaces() if not i.startswith(("lo", "docker", "veth"))]
             return interfaces
         except Exception:
             return []
 
+    def _categorize_signal(self, signal_dbm_str):
+        """Convierte la intensidad de la señal (asumiendo porcentaje 0-100 de nmcli) a una categoría cualitativa."""
+        try:
+            # nmcli -t -f SIGNAL reporta un porcentaje de 0 a 100. Usaremos este valor.
+            signal_perc = int(signal_dbm_str) 
+            
+            if signal_perc >= 80:
+                return "Excelente"
+            elif signal_perc >= 60:
+                return "Buena"
+            elif signal_perc >= 40:
+                return "Baja"
+            else:
+                return "Muy Baja"
+                
+        except ValueError:
+            # Si el valor no es numérico (ej. 'Intra' de las pruebas anteriores), devolvemos el valor original
+            return signal_dbm_str 
+        except Exception:
+             return "Error"
 
     def _open_advanced_mode(self):
         """Crea la ventana del Modo Avanzado."""
@@ -499,12 +549,23 @@ class NetworkMonitorApp:
         interfaces = self._get_all_interfaces()
         
         self.interface_combo = ttk.Combobox(interface_frame, values=interfaces, state="readonly", width=12)
-        self.interface_combo.set(interfaces[0] if interfaces else "")
+        if "wlp7s0" in interfaces:
+            self.interface_combo.set("wlp7s0")
+        elif interfaces:
+            self.interface_combo.set(interfaces[0])
+        else:
+             self.interface_combo.set("")
+             
         self.interface_combo.pack(side=tk.LEFT, padx=5)
         
         scan_button = tk.Button(interface_frame, text=tr["start_wifi_scan"], 
                                 command=lambda: self._start_wifi_scan_thread(self.interface_combo.get(), advanced_window))
         scan_button.pack(side=tk.LEFT, padx=15)
+        
+        # --- Botón de Exportar a CSV ---
+        export_button = tk.Button(interface_frame, text=tr["export_csv"], 
+                                command=self._export_wifi_to_csv)
+        export_button.pack(side=tk.LEFT, padx=15)
         
         # --- Treeview para Redes WiFi ---
         tree_frame = tk.Frame(advanced_window)
@@ -541,58 +602,85 @@ class NetworkMonitorApp:
         threading.Thread(target=self._run_wifi_scan, args=(interface, window), daemon=True).start()
 
     def _run_wifi_scan(self, interface, window):
-        """Escanea la red Wi-Fi usando nmcli (Linux) y actualiza la GUI. NO REQUIERE SUDO."""
+        """Escanea la red Wi-Fi usando nmcli (Linux) y actualiza la GUI. (v2.9 - Categorización y Parseo Estricto)"""
         tr = LANG_DICT[self.current_lang]
         
+        if not interface:
+             window.after(0, lambda: messagebox.showerror(tr["advanced_mode"], "Por favor, selecciona una interfaz válida."))
+             return
+             
         # 1. Iniciar escaneo con nmcli
         self._run_system_command(f"nmcli device wifi rescan ifname {interface}", check_error=False)
 
         # 2. Obtener la lista de redes
-        output, code = self._run_system_command(f"nmcli device wifi list ifname {interface}", check_error=False)
+        command = f"nmcli -t -f SSID,BSSID,CHAN,SIGNAL,SECURITY device wifi list --rescan yes ifname {interface}"
+        output, code = self._run_system_command(command, check_error=False)
         
         if code != 0 or not output:
-             window.after(0, lambda: messagebox.showerror(tr["advanced_mode"], f"{tr['error_wifi_scan']}"))
+             error_msg = f"{tr['error_wifi_scan']} (nmcli Error: {output if output else 'Desconocido, código:' + str(code)})"
+             window.after(0, lambda: messagebox.showerror(tr["advanced_mode"], error_msg))
              return
         
         lines = output.splitlines()
         
-        if len(lines) < 2:
+        if not lines:
             window.after(0, lambda: messagebox.showinfo(tr["advanced_mode"], "No se encontraron redes."))
             return
             
-        for line in lines[1:]:
-            parts = line.split()
-            # Patrones de nmcli típicos: BSSID RATE SIGNAL BARS CHANNEL FREQ TYPE SECURITY SSID
-            # Los campos son variables, necesitamos una forma robusta de extraerlos
-            if len(parts) < 8:
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            
+            # PASO 1: LIMPIEZA CRÍTICA: Eliminar barras invertidas que escapan los dos puntos
+            clean_line = line.replace('\\', '')
+            
+            # El delimitador es ':'
+            parts = clean_line.split(':')
+            
+            # Necesitamos un mínimo de 9 partes: [SSID] + [6x MAC] + [CHAN] + [SIGNAL] + [SECURITY]
+            if len(parts) < 9: 
                 continue
 
             try:
-                # Intento de parseo fijo basado en el formato nmcli list, sin usar regex para simplificar
-                bssid = parts[0]
-                signal = parts[2] 
-                channel = parts[4]
-                # Seguridad puede ser un campo o varios. Simplificamos a uno de los últimos
-                encryption = parts[6]
-                ssid = " ".join(parts[8:]) 
+                # 0: SSID (puede estar vacío)
+                ssid = parts[0].strip() if parts[0].strip() else "<Hidden/Unknown>"
+                
+                # BSSID (partes 1 a 6)
+                bssid_raw = parts[1:7]
+                bssid = ':'.join([p.strip() for p in bssid_raw])
+
+                # El resto de campos se desplazan
+                channel = parts[7].strip()
+                signal = parts[8].strip() # Valor numérico (porcentaje 0-100 de nmcli)
+                encryption = " ".join(parts[9:]).strip() 
+                
             except IndexError:
-                # Si el formato cambia, saltamos esta línea.
                 continue
                 
-            if bssid in self.wifi_networks:
+            # Limpiamos la MAC, solo dejando hex (12 caracteres)
+            mac_clean = re.sub(r'[^0-9A-Fa-f]', '', bssid) 
+            if len(mac_clean) != 12: 
+                 continue
+
+            if mac_clean in self.wifi_networks:
                 continue
                 
-            manufacturer = self._get_device_manufacturer(bssid)
+            manufacturer = self._get_device_manufacturer(mac_clean)
+            
+            # --- Categorización de Señal ---
+            signal_category = self._categorize_signal(signal)
+            # -----------------------------
             
             details = {
-                "SSID": ssid if ssid else "<Hidden/Unknown>",
-                "BSSID": bssid,
+                "SSID": ssid,
+                "BSSID": ':'.join(mac_clean[i:i+2] for i in range(0, 12, 2)), 
                 "Channel": channel,
-                "Signal": signal,
-                "Encryption": encryption,
+                "Signal": signal_category, # Modificado para usar la categoría
+                "Encryption": encryption if encryption else "Open",
                 "Manufacturer": manufacturer
             }
-            self.wifi_networks[bssid] = details
+            self.wifi_networks[mac_clean] = details
             
             self.master.after(0, lambda d=details: self._update_wifi_treeview(d))
 
@@ -609,12 +697,55 @@ class NetworkMonitorApp:
                                       details["Signal"], details["Encryption"], details["Manufacturer"]), 
                               tags=(tag,))
 
+    def _export_wifi_to_csv(self):
+        """Exporta los datos del escaneo Wi-Fi a un archivo CSV."""
+        tr = LANG_DICT[self.current_lang]
+        
+        if not self.wifi_networks:
+            messagebox.showwarning(tr["export_csv"], "No hay datos de redes Wi-Fi para exportar.")
+            return
+
+        from tkinter import filedialog
+        
+        default_filename = f"wifi_scan_report_{time.strftime('%Y%m%d_%H%M%S')}.csv"
+        
+        filepath = filedialog.asksaveasfilename(
+            defaultextension=".csv",
+            initialfile=default_filename,
+            filetypes=[("Archivos CSV", "*.csv"), ("Todos los archivos", "*.*")],
+            title="Guardar informe de escaneo Wi-Fi"
+        )
+
+        if not filepath:
+            return
+
+        try:
+            with open(filepath, 'w', newline='', encoding='utf-8') as csvfile:
+                fieldnames = ["SSID", "BSSID", "Channel", "Signal", "Encryption", "Manufacturer"]
+                # Usamos ';' como delimitador ya que es más común en CSVs españoles
+                writer = csv.DictWriter(csvfile, fieldnames=fieldnames, delimiter=';') 
+                
+                writer.writeheader()
+                
+                for mac in self.wifi_networks:
+                    writer.writerow(self.wifi_networks[mac])
+            
+            messagebox.showinfo(tr["export_csv"], tr["csv_success"].format(filepath))
+            
+        except Exception as e:
+            messagebox.showerror(tr["export_csv"], f"Error al guardar el archivo CSV: {e}")
+
+
 # ----------------------- Main Execution ---------------------------------
 
 if __name__ == "__main__":
-    # NOTA: El Escaneo ARP (parte de la funcionalidad principal) AÚN requiere permisos de root/sudo para Scapy.
-    # El Escaneo Wi-Fi ya NO los requiere, pero sigue siendo conveniente ejecutar con sudo para usar todas las funciones.
     
+    if os.geteuid() != 0:
+         # Advertencia si no se ejecuta como root (importante para ARP y escaneo Wi-Fi)
+         print("\n=======================================================")
+         print("ADVERTENCIA: Se recomienda ejecutar este script con 'sudo' para asegurar el funcionamiento completo (Escaneo de Red/WiFi).")
+         print("=======================================================\n")
+         
     window = tk.Tk()
     app = NetworkMonitorApp(window)
     window.mainloop()
