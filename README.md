@@ -1,4 +1,4 @@
-# GNU-NetworkMonitor2025
+# GNU-NetworkMonitor2026
 
 GNU-NetworkMonitor is a Python-based graphical tool designed to monitor networks and scan for connected hosts. It allows users to view detailed information about each host, including its IP address, MAC address, hostname, and manufacturer. Additionally, the tool can scan open ports for any host and retrieve the public IP address and ISP.
 
@@ -30,7 +30,7 @@ pip install netifaces --break-system-packages
 
 ## Clone this repository:
 ```
-git clone https://github.com/HaimeGalvezMartinez/GNU-NetworkMonitor.git
+git clone https://github.com/JaimeGalvezMartinez/GNU-NetworkMonitor2026.git
 cd GNU-NetworkMonitor
  ``` 
 ## Run the program:
