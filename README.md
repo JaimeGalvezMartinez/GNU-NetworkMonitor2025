@@ -30,7 +30,7 @@ pip install netifaces --break-system-packages
 
 ## Clone this repository:
 ```
-git clone https://github.com/TheHellishPandaa/GNU-NetworkMonitor.git
+git clone https://github.com/HaimeGalvezMartinez/GNU-NetworkMonitor.git
 cd GNU-NetworkMonitor
  ``` 
 ## Run the program:
